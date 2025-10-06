@@ -95,6 +95,82 @@ def least_squares(df, predict_year, target_col):
     st.pyplot(plt.gcf())
     st.success(f"Predicted {target_col} for {predict_year}: {prediction:.2f}")
 
+# ------------------ Polynomial Fitting ------------------
+def polynomial_fitting(df, predict_year, target_col, degree=2):
+    x = np.arange(len(df))
+    y = df[target_col].values
+
+    # Fit polynomial
+    coeffs = np.polyfit(x, y, degree)
+    poly = np.poly1d(coeffs)
+
+    # Predictions
+    trend = poly(x)
+    steps = predict_year - int(df['YEAR'].max())
+    year_index = len(df) + steps
+    prediction = poly(year_index)
+
+    plt.figure(figsize=(10,5))
+    plt.plot(df['YEAR'], df[target_col], label="Actual", color='blue')
+    plt.plot(df['YEAR'], trend, label=f"Polynomial Fit (degree={degree})", color='red')
+    plt.scatter(predict_year, prediction, color='green', s=100, label=f"Prediction {predict_year}")
+    plt.xlabel("Year"); plt.ylabel(target_col); plt.title(f"Polynomial Fitting - {target_col}")
+    plt.legend()
+    st.pyplot(plt.gcf())
+
+    st.success(f"Polynomial Fitting Prediction for {predict_year} ({target_col}): {prediction:.2f}")
+
+def ratio_to_trend(df, predict_year, target_col):
+    # Step 1: Fit linear trend
+    x = np.arange(len(df)).reshape(-1, 1)
+    y = df[target_col].values
+    model = LinearRegression().fit(x, y)
+    trend = model.predict(x)
+
+    # Step 2: Calculate ratios
+    ratio = df[target_col] / trend
+
+    # Step 3: Predict future trend value
+    steps = predict_year - int(df['YEAR'].max())
+    year_index = len(df) + steps
+    predicted_trend = model.predict([[year_index]])[0]
+
+    # Step 4: Use last ratio for prediction
+    last_ratio = ratio.iloc[-1]
+    prediction = predicted_trend * last_ratio
+
+    plt.figure(figsize=(10,5))
+    plt.plot(df['YEAR'], df[target_col], label="Actual", color='blue')
+    plt.plot(df['YEAR'], trend, label="Trend", color='red')
+    plt.scatter(predict_year, prediction, color='green', s=100, label=f"Prediction {predict_year}")
+    plt.xlabel("Year"); plt.ylabel(target_col); plt.title(f"Ratio to Trend - {target_col}")
+    plt.legend()
+    st.pyplot(plt.gcf())
+
+    st.success(f"Ratio to Trend Prediction for {predict_year} ({target_col}): {prediction:.2f}")
+def ratio_to_moving_trend(df, window, predict_year, target_col):
+    # Step 1: Calculate moving average (trend)
+    df['Moving_Trend'] = df[target_col].rolling(window=window, center=True).mean()
+
+    # Step 2: Calculate ratios
+    ratio = df[target_col] / df['Moving_Trend']
+
+    # Step 3: Predict future trend value using last moving average
+    last_trend = df['Moving_Trend'].dropna().iloc[-1]
+    last_ratio = ratio.dropna().iloc[-1]
+    prediction = last_trend * last_ratio
+
+    plt.figure(figsize=(10,5))
+    plt.plot(df['YEAR'], df[target_col], label="Actual", color='blue')
+    plt.plot(df['YEAR'], df['Moving_Trend'], label=f"Moving Trend (window={window})", color='purple')
+    plt.scatter(predict_year, prediction, color='green', s=100, label=f"Prediction {predict_year}")
+    plt.xlabel("Year"); plt.ylabel(target_col); plt.title(f"Ratio to Moving Trend - {target_col}")
+    plt.legend()
+    st.pyplot(plt.gcf())
+
+    st.success(f"Ratio to Moving Trend Prediction for {predict_year} ({target_col}): {prediction:.2f}")
+
+
 def freehand_curve(df, predict_year, target_col):
     window = 5
     df['Smoothed'] = df[target_col].rolling(window=window, center=True).mean()
@@ -142,7 +218,7 @@ def moving_average(df, window, predict_year, target_col):
 def arima_predict(df, predict_year, target_col):
     y_series = pd.Series(df[target_col].values, index=df['YEAR'])
     steps = predict_year - int(df['YEAR'].max()) + 5  # extend 5 years
-    model = ARIMA(y_series, order=(2,1,2)).fit()
+    model = ARIMA(y_series, order=(1,1,1)).fit()
     forecast = model.forecast(steps=steps)
     pred_val = forecast.iloc[predict_year - int(df['YEAR'].max()) - 1]
 
@@ -192,59 +268,87 @@ def rf_predict(df, predict_year, target_col):
 
 
 def lstm_predict(df, predict_year, target_col):
+    # Ensure YEAR is integer
+    df['YEAR'] = df['YEAR'].astype(int)
+
     seq_len = 5
-    data = df[target_col].values.reshape(-1,1)
+    data = df[target_col].values.reshape(-1, 1)
+
+    # Prepare time series data for LSTM
     generator = TimeseriesGenerator(data, data, length=seq_len, batch_size=1)
 
+    # Build LSTM model
     model = Sequential()
-    model.add(LSTM(50, activation='relu', input_shape=(seq_len,1)))
+    model.add(LSTM(50, activation='relu', input_shape=(seq_len, 1)))
     model.add(Dense(1))
     model.compile(optimizer='adam', loss='mse')
     model.fit(generator, epochs=50, verbose=0)
 
-    steps = predict_year - int(df['YEAR'].max()) + 5  # extend 5 years
+    # Predict for future years
+    steps = int(predict_year - int(df['YEAR'].max()) + 5)  # extend 5 years
     last_seq = data[-seq_len:]
     preds = []
+
     for _ in range(steps):
-        next_val = model.predict(last_seq.reshape(1, seq_len,1), verbose=0)[0][0]
+        next_val = model.predict(last_seq.reshape(1, seq_len, 1), verbose=0)[0][0]
         preds.append(next_val)
         last_seq = np.append(last_seq[1:], next_val)
 
-    pred_val = preds[predict_year - int(df['YEAR'].max()) - 1]
-    future_years = list(range(df['YEAR'].iloc[-1]+1, predict_year+6))
+    # Extract prediction for the selected year
+    pred_index = int(predict_year - int(df['YEAR'].max()) - 1)
+    pred_val = preds[pred_index]
 
-    plt.figure(figsize=(12,6))
+    # Generate future years list safely as integers
+    future_years = list(range(int(df['YEAR'].iloc[-1]) + 1, int(predict_year) + 6))
+
+    # Plot results
+    plt.figure(figsize=(12, 6))
     plt.plot(df['YEAR'], df[target_col], label="Actual", color='blue')
     plt.plot(future_years, preds, label="LSTM Forecast", color='red')
     plt.scatter(predict_year, pred_val, color='green', s=100, label=f"Prediction {predict_year}")
-    plt.xlim(1900, predict_year + 5)
-    plt.xlabel("Year"); plt.ylabel(target_col); plt.title(f"LSTM Forecast - {target_col}"); plt.legend()
+    plt.xlim(1900, int(predict_year) + 5)
+    plt.xlabel("Year")
+    plt.ylabel(target_col)
+    plt.title(f"LSTM Forecast - {target_col}")
+    plt.legend()
     st.pyplot(plt.gcf())
-    st.success(f"LSTM Prediction for {predict_year} ({target_col}): {pred_val:.2f}")
 
+    st.success(f"LSTM Prediction for {predict_year} ({target_col}): {pred_val:.2f}")
 
     
 # ------------------ Apply Method ------------------
+
 if uploaded_file and btn_apply:
     if method == "1. Least Squares Method":
         least_squares(df, predict_year, target_col)
+
     elif method == "2. Freehand Curve":
         freehand_curve(df, predict_year, target_col)
+
     elif method == "3. Method of Semi-Averages":
         semi_averages(df, predict_year, target_col)
+
     elif method == "4. Fitting a Curve (Polynomial)":
-        st.warning("Polynomial fitting not implemented yet")
+        degree = st.sidebar.slider("Select Polynomial Degree", 2, 6, 2)
+        polynomial_fitting(df, predict_year, target_col, degree)
+
     elif method == "5. Method of Moving Averages":
         moving_average(df, window_size, predict_year, target_col)
+
     elif method == "6. Ratio to Trend":
-        st.warning("Ratio to Trend not implemented yet")
+        ratio_to_trend(df, predict_year, target_col)
+
     elif method == "7. Ratio to Moving Trend":
-        st.warning("Ratio to Moving Trend not implemented yet")
+        ratio_to_moving_trend(df, window_size, predict_year, target_col)
+
     elif method == "8. ARIMA":
         arima_predict(df, predict_year, target_col)
+
     elif method == "9. Linear Regression (ML)":
         lr_predict(df, predict_year, target_col)
+
     elif method == "10. Random Forest":
         rf_predict(df, predict_year, target_col)
+
     elif method == "11. LSTM":
         lstm_predict(df, predict_year, target_col)
